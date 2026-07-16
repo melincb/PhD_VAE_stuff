@@ -1,0 +1,217 @@
+# Functions to plot ERA5 data before and after autoencoding
+#  Takes data in tensorflow format (no geometry metadata, normalised)
+
+import os
+import sys
+import math
+import numpy as np
+
+# import iris
+import numpy as np
+#import tensorflow as tf
+import matplotlib
+import cmocean
+import cartopy.crs as ccrs
+
+sys.path.append(
+    "%s/../../../data/prepare_training_tensors_ERA5_T850_regridded/" % os.path.dirname(__file__)
+)
+from ERA5_load import ERA5_trim
+from ERA5_load import ERA5_roll_longitude
+from ERA5_load import ERA5_load_LS_mask
+
+# It's a spatial map, so want the land mask
+def get_land_mask():
+    mask = ERA5_load_LS_mask()
+    mask = ERA5_roll_longitude(mask)
+    return mask #ERA5_trim(mask)
+
+
+def plot_Earth(
+    ax,
+    tmx,
+    vMin=0,
+    vMax=1,
+    fog=None,
+    fog_threshold=0.5,
+    fog_steepness=10,
+    obs=None,
+    obs_c=None,
+    o_size=1,
+    land=None,
+    label=None,
+    cmap='seismic',#'bwr'
+    projection=None # ccrs.Robinson()
+):
+    #print('obs_c', obs_c)
+    
+    if land is None:
+       land = get_land_mask()
+    lats = land.coord("latitude").points
+    lons = land.coord("longitude").points
+    # land_img = ax.pcolorfast(
+    #   lons, lats, land.data, cmap="Greys", alpha=0.1, vmax=1.1, vmin=-0.5, zorder=100
+    # )
+    if projection == None:
+        land_img = ax.contour(lons, lats, land.data, colors='k', levels=[0.5], linewidths=[1.0], zorder=1000)
+    # Field data
+    T_img = None
+    if tmx is not None:
+        T_img = ax.pcolor(
+            lons,
+            lats,
+            tmx,
+            shading="auto",
+            cmap=cmap, #"RdYlBu_r",
+            vmin=vMin,
+            vmax=vMax,
+            alpha=1.0,
+            zorder=40,
+        )
+        # Fog of ignorance
+        nLevels = 10
+        levels=np.concatenate(([0],np.linspace(fog_threshold,1,num=nLevels)))
+        if fog is not None:
+            cs = ax.contourf(
+                lons,
+                lats,
+                np.minimum(1.0, fog),
+                levels,
+                colors="none",
+                vmin=0,
+                vmax=1,
+                hatches=[None]+["///"]*(nLevels-1),
+                extend="upper",
+                zorder=500,
+            )
+            nCols = len(cs.collections)
+            alphas = np.linspace(0,1,num=nCols)
+            for i, collection in enumerate(cs.collections):
+                collection.set_edgecolor((0,0,0))
+                collection.set_alpha(alphas[i])
+                collection.set_facecolor('none')
+                collection.set_linewidth(0.0)
+            cs = ax.contourf(
+                lons,
+                lats,
+                np.minimum(1.0, fog),
+                levels,
+                colors="none",
+                vmin=0,
+                vmax=1,
+                hatches=[None]+["\\\\\\"]*(nLevels-1),
+                extend="upper",
+                zorder=500,
+            )
+            for i, collection in enumerate(cs.collections):
+                collection.set_edgecolor((0,0,0))
+                collection.set_alpha(alphas[i])
+                collection.set_facecolor('none')
+                collection.set_linewidth(0.0)
+
+    # Observations
+    if obs is not None:
+        x = (obs[:, 1] / 1440) * 360 - 180
+        y = (obs[:, 0] / 720) * 180 - 90
+        y *= -1
+        if obs_c is None:
+            ax.scatter(
+                (x),#((x / 2).astype(int) + 0) * 2, # orig. ((x / 2).astype(int) + 1) * 2, vendar jih je zamaknilo!
+                (y),#((y / 2).astype(int) + 0) * 2, # orig. ((y / 2).astype(int) + 1) * 2, vendar jih je zamaknilo!
+                s=3.0 * o_size,
+                c='black',
+                marker="o",
+                alpha=0.8,
+                zorder=600,
+            )
+        else:
+            ax.scatter(
+                (x),#((x / 2).astype(int) + 1) * 2,
+                (y),#((y / 2).astype(int) + 1) * 2,
+                s=3.0 * o_size,
+                c=obs_c,
+                edgecolors='k',
+                linewidth=0.5,
+                cmap=cmap, #"RdYlBu_r",
+                vmin=vMin,
+                vmax=vMax,
+                marker="o",
+                alpha=1.0,
+                zorder=600,
+            )
+
+    if label is not None:
+        ax.text(
+            lons[0] + (lons[-1] - lons[0]) * 0.02,
+            lats[0] + (lats[-1] - lats[0]) * 0.04,
+            label,
+            horizontalalignment="left",
+            verticalalignment="top",
+            color="black",
+            bbox=dict(
+                facecolor=(0.8, 0.8, 0.8, 0.8),
+                edgecolor="black",
+                boxstyle="round",
+                pad=0.5,
+            ),
+            size=matplotlib.rcParams["font.size"] / 1.5,
+            clip_on=True,
+            zorder=10000,
+        )
+
+    if projection != None:
+        # This doesn't work!
+        #ax.projection = projection
+        #ax.coastlines()
+        pass
+
+    return T_img
+
+
+def plot_scatter(ax, t_in, t_out, land=None, d_max=5, d_min=-5,
+                 xlab='Original',ylab='Generated',lw=0.5):
+    x = (t_in.flatten() - 0.5) * 10
+    y = (t_out.flatten() - 0.5) * 10
+    #    if land is not None:
+    #        ld = land.data.flatten
+    y = y[x != 0]
+    x = x[x != 0]
+    ax.hexbin(
+        x=x,
+        y=y,
+        cmap=cmocean.cm.ice_r,
+        bins="log",
+        mincnt=1,
+        extent=(d_min,d_max,d_min,d_max),
+    )
+    ax.add_line(
+        matplotlib.lines.Line2D(
+            xdata=(d_min, d_max),
+            ydata=(d_min, d_max),
+            linestyle="solid",
+            linewidth=lw,
+            color=(0.5, 0.5, 0.5, 1),
+            zorder=100,
+        )
+    )
+    ax.set(xlabel=xlab, ylabel=ylab)
+    ax.grid(color="black", alpha=0.2, linestyle="-", linewidth=0.5)
+
+
+def plot_colourbar(
+    fig,
+    ax,
+    T_img,
+    loc='bottom',
+    ticks=None
+):
+    ax.set_axis_off()
+    if ticks:
+        cb = fig.colorbar(
+            T_img, ax=ax, location=loc, orientation="horizontal", fraction=1.0, ticks=ticks
+        )
+    else:
+        cb = fig.colorbar(
+            T_img, ax=ax, location=loc, orientation="horizontal", fraction=1.0
+        )
+ 
